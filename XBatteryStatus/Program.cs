@@ -17,6 +17,44 @@ namespace XBatteryStatus
         [STAThread]
         static void Main(string[] args)
         {
+            Application.SetHighDpiMode(HighDpiMode.SystemAware);
+            Application.EnableVisualStyles();
+            Application.SetCompatibleTextRenderingDefault(false);
+            Localization.Initialize();
+
+            // preview the battery alert popup without a connected controller
+            if (args.Any(a => a.Equals("--test-popup", StringComparison.OrdinalIgnoreCase)))
+            {
+                var overlay = new BatteryAlertOverlay(15, "Xbox Wireless Controller", false);
+                overlay.FormClosed += (s, e) => Application.Exit();
+                overlay.Show();
+                Application.Run();
+                return;
+            }
+
+            // screenshot-test the popup settings dialog
+            if (args.Any(a => a.Equals("--test-dialog", StringComparison.OrdinalIgnoreCase)))
+            {
+                var form = new PopupSettingsForm();
+                var closeTimer = new Timer { Interval = 5000 };
+                closeTimer.Tick += (s, e) => { closeTimer.Stop(); form.Close(); };
+                closeTimer.Start();
+                form.ShowDialog();
+                Application.Exit();
+                return;
+            }
+
+            // screenshot-test the position preview overlay
+            if (args.Any(a => a.Equals("--test-position", StringComparison.OrdinalIgnoreCase)))
+            {
+                BatteryAlertOverlay.ShowPositionPreview();
+                var closeTimer = new Timer { Interval = 5000 };
+                closeTimer.Tick += (s, e) => { closeTimer.Stop(); BatteryAlertOverlay.HidePositionPreview(); Application.Exit(); };
+                closeTimer.Start();
+                Application.Run();
+                return;
+            }
+
             var proc = Process.GetCurrentProcess();
             Process[] processes = Process.GetProcessesByName(proc.ProcessName);
 
@@ -35,9 +73,6 @@ namespace XBatteryStatus
                 }
             }
 
-            Application.SetHighDpiMode(HighDpiMode.SystemAware);
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
             Application.Run(new MyApplicationContext());
         }
     }
