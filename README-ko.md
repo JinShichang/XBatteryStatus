@@ -21,7 +21,7 @@
 
 ## ✨ 기능
 
-- 🎮 **다중 기기 모니터링**: 배터리 서비스가 있는 페어링된 모든 블루투스 기기를 자동 감지합니다 (Xbox 컨트롤러, 블루투스 이어폰, 타사 컨트롤러 등). **블루투스 주소로 중복 제거**하여 같은 이름의 기기가 혼동되지 않습니다
+- 🎮 **다중 기기 모니터링**: 배터리 서비스가 있는 페어링된 모든 블루투스 기기를 자동 감지합니다 (Xbox 컨트롤러, 블루투스 이어폰, 블루투스 키보드/마우스, 타사 컨트롤러 등). **블루투스 주소로 중복 제거**하여 같은 이름의 기기가 혼동되지 않습니다
 - 🟢 **Xbox 도전과제 스타일 팝업**: 하단 중앙에 원이 팝인 → 카드로 확장 → 광택이 스쳐 지나감 → 자동으로 접힘. Windows 11 Xbox Game Bar 도전과제 알림을 충실히 재현했습니다
 - 🎚️ **3단계 맞춤 임계값**: 기기마다 3개의 잔량 값을 각각 설정할 수 있습니다 (기본 35% / 30% / 25%). 임계값을 넘어 내려가면 한 번 알림. 급격한 하락도 감지합니다 (예: 51% → 49%도 발동)
 - ✏️ **완전 커스터마이즈 가능한 팝업**: 제목/부제목 텍스트(`{battery}`, `{device}` 플레이스홀더 지원), 줄마다 독립된 폰트, 전체 배율(100%~200%), **대화형 위치 지정**(방향키로 미세 조정, Enter로 확인)
@@ -111,11 +111,26 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 - 내장 사운드는 빌드 시 출력의 `sound/` 폴더로 자동 복사됩니다
 - `config/`와 `log.txt`는 실행 시 exe 옆에 자동 생성됩니다. 수동 생성 불필요
 
+## ❓ Q&A
+
+- Q: 이 프로젝트를 만든 이유는?
+
+- A: 기존 도구는 Windows 알림으로 알려주지만, 게임 중에는 Windows가 최우선 순위가 아닌 알림을 기본적으로 차단해서 수동으로 최우선 순위로 설정해야 해서 번거롭습니다. 설정을 해도 한동안 지나면 Windows가 '컨트롤러 배터리 앱의 알림을 끌까요?'라고 묻습니다. 알림을 한 번도 열지 않았기 때문에 Microsoft가 중요하지 않다고 판단해 끄기를 권장하기 때문입니다. 그래서 네이티브 알림 채널을 우회해 다른 방식으로 알림을 구현했습니다.
+
+- Q: 어댑터가 정확한 배터리 잔량을 표시하지 못하는 이유는?
+
+- A: XInput은 4단계(Empty 빈 / Low 낮음 / Medium 중간 / Full 가득)만 제공하며, Bluetooth GATT 같은 정확한 백분율이 없습니다. 이는 XInput 프로토콜 자체의 한계이며, 제가 어떻게 할 수 없습니다.
+
+여러 기기 지원
+
 ## 🙏 참고 및 감사
 
-이 프로젝트는 다음 프로젝트를 기반으로 개발되었습니다:
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 후원
 

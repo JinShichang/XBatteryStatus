@@ -15,10 +15,21 @@ namespace XBatteryStatus
         public string CustomName { get; set; } = "";
     }
 
+    /// <summary>Common surface for devices whose battery can be displayed/monitored.</summary>
+    public interface IBatteryDevice
+    {
+        string DeviceName { get; }
+        DeviceSettings Config { get; }
+        int LastBattery { get; set; }
+        string AddressKey { get; }
+        string DisplayName { get; }
+        bool IsConnected { get; }
+    }
+
     /// <summary>
     /// A paired Bluetooth LE device exposing the battery service (0x180F / 0x2A19).
     /// </summary>
-    public class BleDevice : IDisposable
+    public class BleDevice : IDisposable, IBatteryDevice
     {
         public BluetoothLEDevice Device { get; }
         public GattDeviceService BatteryService { get; set; }
@@ -44,6 +55,8 @@ namespace XBatteryStatus
 
         public bool Connected => Device.ConnectionStatus == BluetoothConnectionStatus.Connected;
 
+        public bool IsConnected => Connected;
+
         public void Dispose()
         {
             BatteryService?.Dispose();
@@ -51,6 +64,48 @@ namespace XBatteryStatus
             BatteryCharacteristic = null;
             Device.Dispose();
         }
+    }
+
+    /// <summary>
+    /// A Bluetooth device whose battery is published by Windows as a PnP device property
+    /// ({104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2). Classic audio devices (e.g. earbuds
+    /// reporting via HFP) expose their battery this way even though their LE side is not
+    /// paired, so no GATT access is possible.
+    /// </summary>
+    public class PnpBatteryDevice : IBatteryDevice
+    {
+        public string InstanceId { get; }
+        public string DeviceName { get; }
+        public string AddressKey { get; }
+        public DeviceSettings Config { get; set; } = new DeviceSettings();
+        public int LastBattery { get; set; } = -1;
+        public bool HasValue { get; set; }
+        public bool IsConnected { get; set; }
+
+        public PnpBatteryDevice(string instanceId, string deviceName)
+        {
+            InstanceId = instanceId;
+            string cleaned = deviceName ?? "";
+            foreach (string suffix in new[] { " Hands-Free AG", " Hands-Free", " Handsfree", " Handsfree" })
+            {
+                if (cleaned.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                {
+                    cleaned = cleaned.Substring(0, cleaned.Length - suffix.Length).Trim();
+                    break;
+                }
+            }
+            DeviceName = cleaned.Length > 0 ? cleaned : "Bluetooth Device";
+            string address = null;
+            foreach (System.Text.RegularExpressions.Match match in System.Text.RegularExpressions.Regex.Matches(instanceId, "Dev_([0-9A-Fa-f]{12})|&0&([0-9A-Fa-f]{12})_"))
+            {
+                var groups = match.Groups;
+                address = groups[1].Success ? groups[1].Value : (groups[2].Success ? groups[2].Value : null);
+                if (address != null) break;
+            }
+            AddressKey = "0000" + (address ?? instanceId.GetHashCode().ToString("X8")).ToUpperInvariant();
+        }
+
+        public string DisplayName => string.IsNullOrWhiteSpace(Config.CustomName) ? DeviceName : Config.CustomName;
     }
 
     /// <summary>Persists per device settings to a JSON file in the config folder next to the exe.</summary>

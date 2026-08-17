@@ -21,7 +21,7 @@
 
 ## ✨ Funkcje
 
-- 🎮 **Monitorowanie wielu urządzeń**: automatycznie wykrywa wszystkie sparowane urządzenia Bluetooth z usługą baterii (pady Xbox, słuchawki Bluetooth, pady innych marek itd.), bez duplikatów dzięki **adresowi Bluetooth** — urządzenia o tej samej nazwie nigdy się nie mylą
+- 🎮 **Monitorowanie wielu urządzeń**: automatycznie wykrywa wszystkie sparowane urządzenia Bluetooth z usługą baterii (pady Xbox, słuchawki Bluetooth, klawiatury i myszy Bluetooth, pady innych marek itd.), bez duplikatów dzięki **adresowi Bluetooth** — urządzenia o tej samej nazwie nigdy się nie mylą
 - 🟢 **Powiadomienie w stylu osiągnięcia z Xboxa**: okrąg pojawia się na dole na środku → rozszerza się w kartę → przebiega po niej błysk → automatycznie się zwija. Wierna kopia animacji osiągnięć Xbox Game Bar w Windows 11
 - 🎚️ **Trzy konfigurowalne progi**: każde urządzenie może mieć własne 3 wartości (domyślnie 35% / 30% / 25%). Powiadomienie pojawia się raz po przekroczeniu progu, z wykrywaniem gwałtownych spadków (np. 51% → 49% również zadziała)
 - ✏️ **W pełni konfigurowalne powiadomienie**: tekst tytułu/podtytułu (z symbolami zastępczymi `{battery}` i `{device}`), niezależne czcionki dla każdej linii, ogólna skala (100%–200%), **interaktywne pozycjonowanie** (strzałki do precyzyjnego ustawienia, Enter do potwierdzenia)
@@ -111,11 +111,26 @@ Wynik zapisywany jest do `XBatteryStatus/bin/Release/net8.0-windows10.0.19041.0/
 - Wbudowane dźwięki są automatycznie kopiowane do folderu `sound/` wyników
 - `config/` i `log.txt` są generowane w czasie działania obok exe; nic nie trzeba tworzyć ręcznie
 
+## ❓ FAQ
+
+- P: Dlaczego powstał ten projekt?
+
+- O: Istniejące narzędzia ostrzegają przez powiadomienia systemu Windows, ale podczas grania Windows domyślnie blokuje powiadomienia poniżej najwyższego priorytetu i trzeba ręcznie ustawić najwyższy priorytet — to uciążliwe. Nawet po ustawieniu, po jakimś czasie Windows pyta, czy wyłączyć powiadomienia aplikacji baterii pada, bo nigdy ich nie otworzyłeś; Microsoft uznaje je za nieważne i zaleca wyłączenie. Dlatego ominąłem natywny kanał powiadomień i zaimplementowałem alerty w inny sposób.
+
+- P: Dlaczego adapter nie pokazuje dokładnego poziomu baterii?
+
+- O: XInput zapewnia tylko 4 poziomy (Empty pusty / Low niski / Medium średni / Full pełny); nie ma dokładnych procentów jak w GATT przez Bluetooth. To ograniczenie samego protokołu XInput; nic na to nie poradzę.
+
+Obsługuje wiele urządzeń
+
 ## 🙏 Odniesienia i podziękowania
 
-Projekt oparty jest na następujących projektach:
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 Wsparcie
 

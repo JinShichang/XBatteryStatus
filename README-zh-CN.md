@@ -21,7 +21,7 @@
 
 ## ✨ 功能特性
 
-- 🎮 **多蓝牙设备监控**：自动发现所有带电池服务的已配对蓝牙设备（Xbox 手柄、蓝牙耳机、其他品牌手柄等），按**蓝牙地址去重**，同名设备不会混淆
+- 🎮 **多蓝牙设备监控**：自动发现所有带电池服务的已配对蓝牙设备（Xbox 手柄、蓝牙耳机、蓝牙键鼠、其他品牌手柄等），按**蓝牙地址去重**，同名设备不会混淆
 - 🟢 **Xbox 成就风格悬浮窗**：底部居中的圆形图标弹出 → 展开成卡片 → 光泽扫过 → 自动收起，一比一复刻 Windows 11 Xbox Game Bar 的成就弹窗动画
 - 🎚️ **三档自定义提醒**：每台设备可单独设置 3 个电量提醒值（默认 35% / 30% / 25%），跨过阈值时提醒一次，支持跳电检测（如 51% 直接掉到 49% 也会触发）
 - ✏️ **弹窗完全自定义**：标题/副标题文本（支持 `{battery}`、`{device}` 占位符）、两行独立字体、整体缩放（100%~200%）、**交互式定位**（方向键微调，回车确认）
@@ -111,11 +111,28 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 - 内置提示音会随构建自动复制到输出目录的 `sound/` 文件夹
 - `config/` 配置与 `log.txt` 日志在运行时自动生成于 exe 所在目录，无需手动创建
 
+## ❓ QA
+
+- Q: 为什么要做这个项目?
+
+- A: 因为现有的工具是用Windows通知进行提醒，而你玩游戏的时候，Windows会默认屏蔽非最高优先级的通知，你还需要手动设置为最高优先级，一是比较麻烦，二是即使你设置好了优先级，用一段时间后，Windows就会询问你是否要关闭手柄提醒软件的通知，因为你从来没有点开过它的通知，微软认为它不重要，会推荐你关闭（很傻B）所以我才要绕开原生通知这个通道，用其他方式来实现提醒。
+
+- Q: 为什么适配器无法看到准确电量?
+
+- A: XInput 只提供 4 档电量（Empty 空 / Low 低 / Medium 中 / Full 满），没有蓝牙 GATT 那种精确百分比——这是 XInput 协议本身的限制，我对此无能无力。
+
+支持多种设备
+
 ## 🙏 参考与致谢
 
-本项目基于以下两个项目开发：
+
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
+
 
 ## 🍋 支持
 

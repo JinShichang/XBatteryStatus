@@ -21,7 +21,7 @@
 
 ## ✨ 機能
 
-- 🎮 **複数デバイスの監視**: バッテリーサービスを持つペアリング済み Bluetooth デバイス（Xbox コントローラー、Bluetooth ヘッドホン、他社コントローラーなど）を自動検出。**Bluetooth アドレスで重複排除**するため、同名デバイスが混同されることはありません
+- 🎮 **複数デバイスの監視**: バッテリーサービスを持つペアリング済み Bluetooth デバイス（Xbox コントローラー、Bluetooth ヘッドホン、Bluetooth キーボード・マウス、他社コントローラーなど）を自動検出。**Bluetooth アドレスで重複排除**するため、同名デバイスが混同されることはありません
 - 🟢 **Xbox 実績風ポップアップ**: 下部中央に円がポップイン → カードに展開 → 光沢が走る → 自動で収縮。Windows 11 の Xbox Game Bar 実績トーストを忠実に再現
 - 🎚️ **3段階のカスタムしきい値**: デバイスごとに 3 つの残量値を個別設定可能（既定 35% / 30% / 25%）。しきい値を下回ったときに 1 回通知。急激な低下も検出（例: 51% → 49% でも発動）
 - ✏️ **完全カスタマイズ可能なポップアップ**: タイトル/サブタイトルのテキスト（`{battery}` と `{device}` のプレースホルダー対応）、行ごとの独立フォント、全体スケール（100%–200%）、**対話式の位置調整**（矢印キーで微調整、Enter で確定）
@@ -111,11 +111,26 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 - 内蔵サウンドはビルド時に出力先の `sound/` フォルダーへ自動コピーされます
 - `config/` と `log.txt` は実行時に exe の隣に自動生成されます。手動作成は不要
 
+## ❓ Q&A
+
+- Q: このプロジェクトを作った理由は?
+
+- A: 既存ツールは Windows 通知で知らせますが、ゲーム中は Windows が最高優先度以外の通知を既定でブロックし、手動で最高優先度に設定する必要があり面倒です。設定しても、しばらくすると Windows が「コントローラー電池アプリの通知をオフにしますか?」と聞いてきます。通知を一度も開いていないため、Microsoft は重要ではないと判断してオフを推奨するからです。そこでネイティブ通知チャンネルを迂回し、別の方法で通知を実装しました。
+
+- Q: アダプターで正確な残量が見えないのはなぜ?
+
+- A: XInput は 4 段階（Empty 空 / Low 低 / Medium 中 / Full 満）しか提供せず、Bluetooth GATT のような正確なパーセントはありません。これは XInput プロトコル自体の制限であり、どうすることもできません。
+
+複数デバイス対応
+
 ## 🙏 参考・謝辞
 
-本プロジェクトは以下のプロジェクトを基に開発されています:
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 サポート
 

@@ -21,7 +21,7 @@
 
 ## ✨ Funktionen
 
-- 🎮 **Überwachung mehrerer Geräte**: erkennt automatisch alle gekoppelten Bluetooth-Geräte mit Akku-Dienst (Xbox-Controller, Bluetooth-Kopfhörer, Controller anderer Marken usw.), bereinigt Duplikate anhand der **Bluetooth-Adresse**, damit gleichnamige Geräte nie verwechselt werden
+- 🎮 **Überwachung mehrerer Geräte**: erkennt automatisch alle gekoppelten Bluetooth-Geräte mit Akku-Dienst (Xbox-Controller, Bluetooth-Kopfhörer, Bluetooth-Tastaturen und -Mäuse, Controller anderer Marken usw.), bereinigt Duplikate anhand der **Bluetooth-Adresse**, damit gleichnamige Geräte nie verwechselt werden
 - 🟢 **Popup im Xbox-Erfolgsstil**: ein Kreis erscheint unten in der Mitte → weitet sich zu einer Karte aus → ein Glanzstreifen läuft darüber → klappt automatisch wieder ein. Eine originalgetreue Nachbildung der Erfolgsanimation der Xbox Game Bar unter Windows 11
 - 🎚️ **Drei frei einstellbare Warnstufen**: jedes Gerät kann seine eigenen 3 Werte haben (Standard 35 % / 30 % / 25 %). Die Warnung ertönt einmal beim Unterschreiten eines Schwellenwerts, mit Erkennung von Sprungabfällen (z. B. 51 % → 49 % löst ebenfalls aus)
 - ✏️ **Vollständig anpassbares Popup**: Titel-/Untertiteltext (mit den Platzhaltern `{battery}` und `{device}`), unabhängige Schriftarten pro Zeile, Gesamtskalierung (100 %–200 %), **interaktive Positionierung** (Pfeiltasten zum Feinjustieren, Enter zum Bestätigen)
@@ -111,11 +111,26 @@ Die Ausgabe liegt unter `XBatteryStatus/bin/Release/net8.0-windows10.0.19041.0/`
 - Die integrierten Töne werden automatisch in den `sound/`-Ordner der Ausgabe kopiert
 - `config/` und `log.txt` werden zur Laufzeit neben der exe erzeugt; manuell muss nichts angelegt werden
 
+## ❓ FAQ
+
+- F: Warum wurde dieses Projekt erstellt?
+
+- A: Bestehende Tools warnen über Windows-Benachrichtigungen, aber beim Spielen unterdrückt Windows standardmäßig Benachrichtigungen unterhalb der höchsten Priorität, und man muss die Priorität manuell erhöhen — das ist lästig. Selbst nach der Einrichtung fragt Windows nach einer Weile, ob die Benachrichtigungen der Controller-Akku-App deaktiviert werden sollen, weil man sie nie geöffnet hat; Microsoft hält sie für unwichtig und empfiehlt, sie zu deaktivieren. Deshalb habe ich den nativen Benachrichtigungskanal umgangen und die Hinweise anders umgesetzt.
+
+- F: Warum zeigt der Adapter keinen genauen Akkustand an?
+
+- A: XInput bietet nur 4 Stufen (Empty leer / Low niedrig / Medium mittel / Full voll); es gibt keinen präzisen Prozentsatz wie beim Bluetooth-GATT. Das ist eine Einschränkung des XInput-Protokolls selbst; daran kann ich nichts ändern.
+
+Unterstützt mehrere Geräte
+
 ## 🙏 Referenzen & Danksagung
 
-Dieses Projekt basiert auf folgenden Projekten:
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 Unterstützung
 

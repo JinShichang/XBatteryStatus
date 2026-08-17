@@ -21,10 +21,10 @@
 
 ## ✨ Features
 
-- 🎮 **Multi-device monitoring**: automatically discovers all paired Bluetooth devices with a battery service (Xbox controllers, Bluetooth headsets, controllers of other brands, etc.), deduplicated by **Bluetooth address** so devices with the same name never get mixed up
+- 🎮 **Multi-device monitoring**: automatically discovers all paired Bluetooth devices with a battery service (Xbox controllers, Bluetooth headsets, Bluetooth keyboards/mice, controllers of other brands, etc.), deduplicated by **Bluetooth address** so devices with the same name never get mixed up
 - 🟢 **Xbox achievement-style popup**: a circle pops in at the bottom center → expands into a card → a shine sweeps across → auto-collapses. A faithful recreation of the Windows 11 Xbox Game Bar achievement toast animation
 - 🎚️ **Three custom alert levels**: each device can have its own 3 alert values (default 35% / 30% / 25%). Alerts fire once when a threshold is crossed, with jump-drop detection (e.g. 51% → 49% still triggers)
-- ✏️ **Fully customizable popup**: title/subtitle text (with `{battery}` and `{device}` placeholders), independent fonts per line, overall scale (100%–200%), **interactive positioning** (arrow keys to fine-tune, Enter to confirm)
+- ✏️ **Fully customizable popup**: title/subtitle text (with `{battery}` and `{device}` placeholders), independent fonts per line, overall scale (100%~200%), **interactive positioning** (arrow keys to fine-tune, Enter to confirm)
 - 🔔 **Alert sounds**: several built-in sounds, custom `.wav` files supported (just drop them into the `sound` folder next to the exe), muted by default
 - 🌍 **Multilingual UI**: Simplified Chinese, English, Russian, Spanish, Portuguese, German, Japanese, French, Polish, Korean, Arabic; automatically switches to Chinese on Chinese systems
 - 🚀 **Start with Windows**: enabled by default, one-click toggle
@@ -60,7 +60,7 @@ The app lives in the system tray. Right-click the tray icon:
 - Automatically lists all paired Bluetooth devices with a battery service (deduplicated by Bluetooth address)
 - Per device you can configure:
   - ✅ Whether low battery alerts are enabled (gamepads enabled by default)
-  - 🔢 3 alert battery values (1–100%)
+  - 🔢 3 alert battery values (1~100%)
   - ✏️ A custom display name (leave blank to use the device name; used by the `{device}` placeholder in the popup)
 - **Polling interval**: how often the battery is read, in seconds (default 15s)
 - **Enable Logging**: when checked, detailed runtime logs are recorded
@@ -111,11 +111,26 @@ The output is written to `XBatteryStatus/bin/Release/net8.0-windows10.0.19041.0/
 - The built-in sounds are copied to the `sound/` folder of the output automatically
 - `config/` and `log.txt` are generated at runtime next to the exe; nothing needs to be created manually
 
+## ❓ QA
+
+- Q: Why was this project made?
+
+- A: Existing tools alert via Windows notifications, but while you're gaming Windows silently suppresses non-high-priority notifications by default, so you have to raise the priority manually — which is annoying. Even after you set it, after a while Windows asks whether to turn off the gamepad battery app's notifications, because you never opened them; Microsoft assumes it's unimportant and suggests disabling it. That's why I bypassed the native notification channel and implemented alerts in a different way.
+
+- Q: Why can't the adapter show an exact battery level?
+
+- A: XInput only provides 4 levels (Empty / Low / Medium / Full); there's no precise percentage like Bluetooth GATT. This is a limitation of the XInput protocol itself; there's nothing I can do about it.
+
+Supports multiple devices
+
 ## 🙏 References & Credits
 
-This project is based on the following projects:
+https://github.com/NiyaShy/XB1ControllerBatteryIndicator
 https://github.com/tommaier123/XBatteryStatus
 https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+https://github.com/gopi470/Nox
+https://github.com/SpartanX1/bluetooth_classic_battery_windows
+https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 Support
 

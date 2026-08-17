@@ -1,4 +1,4 @@
-﻿using Microsoft.Win32;
+using Microsoft.Win32;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -10,8 +10,10 @@ using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 using Windows.Devices.Bluetooth;
+using Windows.Devices.Bluetooth.Advertisement;
 using Windows.Devices.Bluetooth.GenericAttributeProfile;
 using Windows.Devices.Enumeration;
+using Windows.Devices.Power;
 using Windows.Devices.Radios;
 using Windows.Storage.Streams;
 
@@ -36,6 +38,7 @@ namespace XBatteryStatus
         private Timer DiscoverTimer;
 
         public List<BleDevice> pairedDevices = new List<BleDevice>();
+        public List<PnpBatteryDevice> pnpDevices = new List<PnpBatteryDevice>();
         public Radio bluetoothRadio;
 
         private Dictionary<string, DeviceSettings> deviceConfig = new Dictionary<string, DeviceSettings>();
@@ -379,22 +382,154 @@ namespace XBatteryStatus
             }
         }
 
+        private bool discoveryRunning;
+        private bool rescanScheduled;
+        private readonly HashSet<string> probedAddresses = new HashSet<string>();
+
+        /// <summary>Raised after a discovery scan finishes so open UIs (e.g. the devices window) can refresh.</summary>
+        public event Action DevicesChanged;
+
+        /// <summary>Fast refresh for open UIs: updates PnP/HFP battery values and reads connected
+        /// BLE devices without re-running the slow discovery passes.</summary>
+        public async Task RefreshDevicesLightAsync()
+        {
+            await RefreshPnpBatteries(false);
+            foreach (var device in pairedDevices.Where(d => d.Connected))
+            {
+                try
+                {
+                    await ReadBattery(device);
+                }
+                catch
+                {
+                }
+            }
+            DevicesChanged?.Invoke();
+        }
+
+        /// <summary>Publishes the current discovery result (wiring, config save, tray/UI refresh).
+        /// Called after the fast passes so devices appear immediately, and again once the slow
+        /// passes finish to pick up any devices they found.</summary>
+        private void CommitFoundDevices(List<BleDevice> found, int totalEntries, int bleInterfaces, int fromIdFailed, string phase)
+        {
+            var newDevices = found.Except(pairedDevices).ToList();
+            var removedDevices = pairedDevices.Except(found).ToList();
+
+            foreach (var device in newDevices)
+            {
+                device.Device.ConnectionStatusChanged += ConnectionStatusChanged;
+            }
+
+            foreach (var device in removedDevices)
+            {
+                if (device != null)
+                {
+                    device.Device.ConnectionStatusChanged -= ConnectionStatusChanged;
+                    device.Dispose();
+                }
+            }
+
+            pairedDevices = found;
+
+            // a physical device may have been added via the PnP pass before the LE passes
+            // finished; keep the richer LE/GATT entry and drop the PnP duplicate
+            pnpDevices.RemoveAll(p => pairedDevices.Any(q => q.AddressKey == p.AddressKey));
+            if (AppConfig.Logging)
+            {
+                Log($"Discovery ({phase}): PnP battery devices after cleanup: {pnpDevices.Count} -> {string.Join(", ", pnpDevices.Select(p => p.DisplayName + " (" + p.LastBattery + "%)"))}");
+            }
+
+            DeviceConfig.Save(deviceConfig);
+
+            Log($"Discovery ({phase}): total entries={totalEntries}, BLE interfaces={bleInterfaces}, FromIdAsync failed={fromIdFailed}, {found.Count} device(s) with battery service, {removedDevices.Count} removed");
+            foreach (var device in found)
+            {
+                Log($"  found [{device.AddressKey}] name='{device.DeviceName}', gamepad={device.IsGamepad}, enabled={device.Config.Enabled}, levels=[{string.Join(",", device.Config.Levels ?? new[] { 0 })}], connected={device.Connected}");
+            }
+
+            if (pairedDevices.Count == 0)
+            {
+                SetIcon(-1, "!");
+                notifyIcon.Text = Localization.Tr("StatusNoDevices");
+            }
+            else
+            {
+                PollBatteries();
+            }
+
+            DevicesChanged?.Invoke();
+        }
+
+        /// <summary>Runs a device scan. Safe to call from anywhere (reentrancy guarded).</summary>
+        public async Task RefreshDevicesAsync()
+        {
+            await ScanDevicesCore();
+        }
+
         async private void FindBleDevices()
         {
-            if (bluetoothRadio?.State == RadioState.On)
+            await ScanDevicesCore();
+        }
+
+        private async Task ScanDevicesCore()
+        {
+            if (discoveryRunning) return;
+
+            if (bluetoothRadio?.State != RadioState.On && bluetoothRadio != null)
             {
+                Log("Discovery: Bluetooth radio is OFF, skipping device scan");
+                SetIcon(-1, "!");
+                notifyIcon.Text = Localization.Tr("StatusBleOff");
+                return;
+            }
+
+            discoveryRunning = true;
+            try
+            {
+                // fast pass: PnP battery property first so the earbuds/audio battery appears in
+                // the devices window and tray immediately, before the slower LE passes finish.
+                await RefreshPnpBatteries(false);
+
                 List<BleDevice> found = new List<BleDevice>();
                 HashSet<ulong> seenAddresses = new HashSet<ulong>();
+                int totalEntries = 0;
+                int bleInterfaces = 0;
+                int fromIdFailed = 0;
 
                 foreach (var device in await DeviceInformation.FindAllAsync())
                 {
+                    totalEntries++;
+                    // BluetoothLEDevice.FromIdAsync fails fast for non-BLE ids; no prefix filter
+                    // here because some systems report BLE interfaces with unexpected id formats
+                    bleInterfaces++;
+
                     BluetoothLEDevice bleDevice = null;
                     bool keepDevice = false;
                     try
                     {
-                        bleDevice = await BluetoothLEDevice.FromIdAsync(device.Id);
+                        try
+                        {
+                            bleDevice = await BluetoothLEDevice.FromIdAsync(device.Id);
+                        }
+                        catch (Exception ex)
+                        {
+                            if (AppConfig.Logging && device.Id.Contains("BTH", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(device.Name))
+                            {
+                                Log($"  FromIdAsync FAILED for '{device.Name}' ({device.Id}): {ex.Message}");
+                            }
+                            fromIdFailed++;
+                            continue;
+                        }
 
-                        if (bleDevice == null) continue;
+                        if (bleDevice == null)
+                        {
+                            if (AppConfig.Logging && device.Id.Contains("BTH", StringComparison.OrdinalIgnoreCase) && !string.IsNullOrEmpty(device.Name))
+                            {
+                                Log($"  FromIdAsync returned null for '{device.Name}' ({device.Id})");
+                            }
+                            fromIdFailed++;
+                            continue;
+                        }
 
                         bool isGamepad = false;
                         try
@@ -405,41 +540,93 @@ namespace XBatteryStatus
                         {
                         }
 
+                        bool hasBattery = false;
+                        string debugInfo = $"BLE candidate: name='{bleDevice.Name}', connected={bleDevice.ConnectionStatus == BluetoothConnectionStatus.Connected}";
+
+                        // 1) quick check against the cached GATT services (works after the first GATT session)
                         using (GattDeviceService service = bleDevice.GetGattService(BatteryServiceGuid))
                         {
                             if (service != null)
                             {
                                 GattCharacteristic characteristic = service.GetCharacteristics(BatteryLevelGuid).FirstOrDefault();
-                                if (characteristic != null)
+                                hasBattery = characteristic != null;
+                            }
+                        }
+                        debugInfo += $", battery(cached)={hasBattery}";
+
+                        // 2) the cache may be empty for devices whose GATT was never opened before
+                        //    (e.g. headphones/speakers paired over classic audio). Perform a real
+                        //    service enumeration - it establishes the GATT session itself, so it
+                        //    works even while the BLE side reports as not connected.
+                        if (!hasBattery)
+                        {
+                            try
+                            {
+                                var enumTask = bleDevice.GetGattServicesAsync().AsTask();
+                                var completed = await Task.WhenAny(enumTask, Task.Delay(10000));
+                                if (completed == enumTask)
                                 {
-                                    // dedupe by Bluetooth address: Windows may expose multiple instances for the same physical device
-                                    if (!seenAddresses.Add(bleDevice.BluetoothAddress))
+                                    var servicesResult = enumTask.Result;
+                                    if (servicesResult.Status == GattCommunicationStatus.Success)
                                     {
-                                        continue;
+                                        hasBattery = servicesResult.Services.Any(s => s.Uuid == BatteryServiceGuid);
+                                        if (!hasBattery && AppConfig.Logging)
+                                        {
+                                            string svcs = string.Join(", ", servicesResult.Services.Take(12).Select(s => s.Uuid.ToString().Substring(4, 8)));
+                                            Log($"BLE candidate '{bleDevice.Name}': no standard battery service, exposed: {svcs}");
+                                        }
+                                        foreach (var s in servicesResult.Services)
+                                        {
+                                            s.Dispose();
+                                        }
                                     }
-
-                                    // reuse the existing entry so LastBattery, event wiring and config survive
-                                    // the periodic discovery scan (avoids re-triggering first-read alerts)
-                                    string addressKey = bleDevice.BluetoothAddress.ToString("X16");
-                                    var existing = pairedDevices.FirstOrDefault(d => d.AddressKey == addressKey);
-                                    if (existing != null)
-                                    {
-                                        found.Add(existing);
-                                        continue; // dispose the duplicate BluetoothLEDevice in finally
-                                    }
-
-                                    var entry = new BleDevice(bleDevice, isGamepad);
-                                    deviceConfig.TryGetValue(entry.AddressKey, out var config);
-                                    if (config == null)
-                                    {
-                                        config = new DeviceSettings { Enabled = isGamepad };
-                                        deviceConfig[entry.AddressKey] = config;
-                                    }
-                                    entry.Config = config;
-                                    found.Add(entry);
-                                    keepDevice = true;
+                                }
+                                else
+                                {
+                                    Log($"BLE candidate '{bleDevice.Name}': service enumeration TIMEOUT after 10s");
                                 }
                             }
+                            catch
+                            {
+                            }
+                            debugInfo += $", battery(enum)={hasBattery}";
+                        }
+
+                        if (hasBattery)
+                        {
+                            // dedupe by Bluetooth address: Windows may expose multiple instances for the same physical device
+                            if (!seenAddresses.Add(bleDevice.BluetoothAddress))
+                            {
+                                Log(debugInfo + " -> skipped (duplicate address)");
+                                continue;
+                            }
+
+                            Log(debugInfo + " -> kept");
+
+                            // reuse the existing entry so LastBattery, event wiring and config survive
+                            // the periodic discovery scan (avoids re-triggering first-read alerts)
+                            string addressKey = bleDevice.BluetoothAddress.ToString("X16");
+                            var existing = pairedDevices.FirstOrDefault(d => d.AddressKey == addressKey);
+                            if (existing != null)
+                            {
+                                found.Add(existing);
+                                continue; // dispose the duplicate BluetoothLEDevice in finally
+                            }
+
+                            var entry = new BleDevice(bleDevice, isGamepad);
+                            deviceConfig.TryGetValue(entry.AddressKey, out var config);
+                            if (config == null)
+                            {
+                                config = new DeviceSettings { Enabled = isGamepad };
+                                deviceConfig[entry.AddressKey] = config;
+                            }
+                            entry.Config = config;
+                            found.Add(entry);
+                            keepDevice = true;
+                        }
+                        else
+                        {
+                            Log(debugInfo + " -> no battery service");
                         }
                     }
                     catch
@@ -454,47 +641,541 @@ namespace XBatteryStatus
                     }
                 }
 
-                var newDevices = found.Except(pairedDevices).ToList();
-                var removedDevices = pairedDevices.Except(found).ToList();
-
-                foreach (var device in newDevices)
+                // second pass: BLE association endpoints. Some BLE devices (e.g. earbuds paired
+                // over classic audio) only show up here, which is how Windows itself reads their battery.
+                // Note: the IsPaired flag is unreliable here (paired devices often report False),
+                // so every endpoint is considered; the async service probe below only runs once
+                // per address to avoid poking unrelated nearby devices repeatedly.
+                try
                 {
-                    device.Device.ConnectionStatusChanged += ConnectionStatusChanged;
-                }
-
-                foreach (var device in removedDevices)
-                {
-                    if (device != null)
+                    var bleEndpoints = await DeviceInformation.FindAllAsync(BluetoothLEDevice.GetDeviceSelector());
+                    foreach (var ep in bleEndpoints)
                     {
-                        device.Device.ConnectionStatusChanged -= ConnectionStatusChanged;
-                        device.Dispose();
+                        if (AppConfig.Logging)
+                        {
+                            Log($"  BLE endpoint: name='{ep.Name}', paired={ep.Pairing?.IsPaired == true}, id={ep.Id}");
+                        }
+
+                        BluetoothLEDevice epDevice = null;
+                        bool keepEp = false;
+                        try
+                        {
+                            epDevice = await BluetoothLEDevice.FromIdAsync(ep.Id);
+                            if (epDevice == null) continue;
+
+                            if (!seenAddresses.Add(epDevice.BluetoothAddress))
+                            {
+                                continue; // already handled by the first pass
+                            }
+
+                            bool epHasBattery = false;
+                            using (GattDeviceService service = epDevice.GetGattService(BatteryServiceGuid))
+                            {
+                                if (service != null)
+                                {
+                                    GattCharacteristic characteristic = service.GetCharacteristics(BatteryLevelGuid).FirstOrDefault();
+                                    epHasBattery = characteristic != null;
+                                }
+                            }
+
+                            string epKey = epDevice.BluetoothAddress.ToString("X16");
+
+                            // only probe the GATT services once per address
+                            if (!epHasBattery && probedAddresses.Add(epKey))
+                            {
+                                try
+                                {
+                                    var enumTask = epDevice.GetGattServicesAsync().AsTask();
+                                    var completed = await Task.WhenAny(enumTask, Task.Delay(10000));
+                                    if (completed == enumTask)
+                                    {
+                                        var servicesResult = enumTask.Result;
+                                        if (servicesResult.Status == GattCommunicationStatus.Success)
+                                        {
+                                            epHasBattery = servicesResult.Services.Any(s => s.Uuid == BatteryServiceGuid);
+                                            if (!epHasBattery && AppConfig.Logging)
+                                            {
+                                                string svcs = string.Join(", ", servicesResult.Services.Take(12).Select(s => s.Uuid.ToString().Substring(4, 8)));
+                                                Log($"  BLE endpoint '{epDevice.Name}': no standard battery service, exposed: {svcs}");
+                                            }
+                                            foreach (var s in servicesResult.Services)
+                                            {
+                                                s.Dispose();
+                                            }
+                                        }
+                                    }
+                                }
+                                catch
+                                {
+                                }
+                            }
+
+                            if (epHasBattery)
+                            {
+                                Log($"  BLE endpoint '{epDevice.Name}': battery found (connected={epDevice.ConnectionStatus == BluetoothConnectionStatus.Connected})");
+                            }
+
+                            if (!epHasBattery)
+                            {
+                                continue;
+                            }
+
+                            bool epGamepad = false;
+                            try
+                            {
+                                epGamepad = epDevice.Appearance.SubCategory == BluetoothLEAppearanceSubcategories.Gamepad;
+                            }
+                            catch
+                            {
+                            }
+
+                            var existing = pairedDevices.FirstOrDefault(d => d.AddressKey == epKey);
+                            if (existing != null)
+                            {
+                                found.Add(existing);
+                                continue;
+                            }
+
+                            var epEntry = new BleDevice(epDevice, epGamepad);
+                            deviceConfig.TryGetValue(epEntry.AddressKey, out var epConfig);
+                            if (epConfig == null)
+                            {
+                                epConfig = new DeviceSettings { Enabled = epGamepad };
+                                deviceConfig[epEntry.AddressKey] = epConfig;
+                            }
+                            epEntry.Config = epConfig;
+                            found.Add(epEntry);
+                            keepEp = true;
+                        }
+                        catch
+                        {
+                        }
+                        finally
+                        {
+                            if (!keepEp && epDevice != null)
+                            {
+                                epDevice.Dispose();
+                            }
+                        }
                     }
                 }
-
-                pairedDevices = found;
-                DeviceConfig.Save(deviceConfig);
-
-                Log($"Discovery: {found.Count} device(s) with battery service found, {removedDevices.Count} removed");
-                foreach (var device in found)
+                catch (Exception ex)
                 {
-                    Log($"  found [{device.AddressKey}] name='{device.DeviceName}', gamepad={device.IsGamepad}, enabled={device.Config.Enabled}, levels=[{string.Join(",", device.Config.Levels ?? new[] { 0 })}], connected={device.Connected}");
+                    Log("BLE endpoint pass failed: " + ex.Message);
                 }
 
-                if (pairedDevices.Count == 0)
+                // fast commit: publish the devices found by the quick passes (PnP property, BLE
+                // interface scan, association endpoints) right away so the tray icon and devices
+                // window show results within seconds of startup; the slow passes below keep going
+                // and commit again when they finish.
+                CommitFoundDevices(found, totalEntries, bleInterfaces, fromIdFailed, "fast");
+
+                // third pass: classic paired Bluetooth devices (e.g. earbuds/speakers paired over
+                // classic audio) may expose their BLE battery service under the same address, but
+                // Windows does not enumerate a BLE interface for them. Connecting directly to the
+                // address (like Windows Settings does) reads the GATT battery service anyway.
+                try
                 {
-                    SetIcon(-1, "!");
-                    notifyIcon.Text = Localization.Tr("StatusNoDevices");
+                    var classicDevices = await DeviceInformation.FindAllAsync(BluetoothDevice.GetDeviceSelector());
+                    foreach (var classic in classicDevices)
+                    {
+                        BluetoothDevice classicDevice = null;
+                        try
+                        {
+                            classicDevice = await BluetoothDevice.FromIdAsync(classic.Id);
+                        }
+                        catch
+                        {
+                        }
+                        if (classicDevice == null) continue;
+
+                        if (AppConfig.Logging)
+                        {
+                            Log($"  Classic device: name='{classicDevice.Name}', addr={classicDevice.BluetoothAddress:X12}");
+                        }
+
+                        BluetoothLEDevice bridgeDevice = null;
+                        bool keepBridge = false;
+                        try
+                        {
+                            bridgeDevice = await BluetoothLEDevice.FromBluetoothAddressAsync(classicDevice.BluetoothAddress);
+                            if (bridgeDevice == null)
+                            {
+                                if (AppConfig.Logging)
+                                {
+                                    Log($"  Classic->BLE '{classicDevice.Name}': FromBluetoothAddressAsync returned null");
+                                }
+                                continue;
+                            }
+
+                            if (!seenAddresses.Add(bridgeDevice.BluetoothAddress))
+                            {
+                                continue; // already handled by a previous pass
+                            }
+
+                            bool bridgeHasBattery = false;
+                            using (GattDeviceService service = bridgeDevice.GetGattService(BatteryServiceGuid))
+                            {
+                                if (service != null)
+                                {
+                                    GattCharacteristic characteristic = service.GetCharacteristics(BatteryLevelGuid).FirstOrDefault();
+                                    bridgeHasBattery = characteristic != null;
+                                }
+                            }
+
+                            string bridgeKey = bridgeDevice.BluetoothAddress.ToString("X16");
+
+                            if (AppConfig.Logging)
+                            {
+                                Log($"  Classic->BLE '{bridgeDevice.Name}': created, cached battery={bridgeHasBattery}, connected={bridgeDevice.ConnectionStatus == BluetoothConnectionStatus.Connected}");
+                            }
+
+                            if (!bridgeHasBattery && probedAddresses.Add(bridgeKey))
+                            {
+                                try
+                                {
+                                    var enumTask = bridgeDevice.GetGattServicesAsync().AsTask();
+                                    var completed = await Task.WhenAny(enumTask, Task.Delay(10000));
+                                    if (completed == enumTask)
+                                    {
+                                        var servicesResult = enumTask.Result;
+                                        if (AppConfig.Logging)
+                                        {
+                                            Log($"  Classic->BLE '{bridgeDevice.Name}': enum status={servicesResult.Status}, services={servicesResult.Services.Count}");
+                                        }
+                                        if (servicesResult.Status == GattCommunicationStatus.Success)
+                                        {
+                                            bridgeHasBattery = servicesResult.Services.Any(s => s.Uuid == BatteryServiceGuid);
+                                            if (!bridgeHasBattery && AppConfig.Logging)
+                                            {
+                                                string svcs = string.Join(", ", servicesResult.Services.Take(12).Select(s => s.Uuid.ToString().Substring(4, 8)));
+                                                Log($"  Classic->BLE '{bridgeDevice.Name}': no standard battery service, exposed: {svcs}");
+                                            }
+                                            foreach (var s in servicesResult.Services)
+                                            {
+                                                s.Dispose();
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        Log($"  Classic->BLE '{bridgeDevice.Name}': enum TIMEOUT after 10s");
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    Log($"  Classic->BLE '{bridgeDevice.Name}': enum ERROR - {ex.Message}");
+                                }
+                            }
+
+                            if (!bridgeHasBattery)
+                            {
+                                continue;
+                            }
+
+                            Log($"  Classic->BLE '{bridgeDevice.Name}' [{bridgeKey}]: battery service found (connected={bridgeDevice.ConnectionStatus == BluetoothConnectionStatus.Connected})");
+
+                            bool bridgeGamepad = false;
+                            try
+                            {
+                                bridgeGamepad = bridgeDevice.Appearance.SubCategory == BluetoothLEAppearanceSubcategories.Gamepad;
+                            }
+                            catch
+                            {
+                            }
+
+                            var bridgeExisting = pairedDevices.FirstOrDefault(d => d.AddressKey == bridgeKey);
+                            if (bridgeExisting != null)
+                            {
+                                found.Add(bridgeExisting);
+                                continue;
+                            }
+
+                            var bridgeEntry = new BleDevice(bridgeDevice, bridgeGamepad);
+                            deviceConfig.TryGetValue(bridgeEntry.AddressKey, out var bridgeConfig);
+                            if (bridgeConfig == null)
+                            {
+                                bridgeConfig = new DeviceSettings { Enabled = bridgeGamepad };
+                                deviceConfig[bridgeEntry.AddressKey] = bridgeConfig;
+                            }
+                            bridgeEntry.Config = bridgeConfig;
+                            found.Add(bridgeEntry);
+                            keepBridge = true;
+                        }
+                        catch (Exception ex)
+                        {
+                            if (AppConfig.Logging)
+                            {
+                                Log($"  Classic->BLE '{classicDevice.Name}': ERROR - {ex.Message}");
+                            }
+                        }
+                        finally
+                        {
+                            if (!keepBridge && bridgeDevice != null)
+                            {
+                                bridgeDevice.Dispose();
+                            }
+                        }
+                    }
                 }
-                else
+                catch (Exception ex)
                 {
-                    PollBatteries();
+                    Log("Classic->BLE pass failed: " + ex.Message);
+                }
+
+                // fourth pass: BLE advertisement scan. Audio devices like earbuds/speakers are
+                // often paired over classic Bluetooth only, so their LE address is unknown to
+                // Windows. An advertisement scan reveals their real LE address and advertised
+                // service UUIDs; then we can connect to their GATT battery service directly.
+                try
+                {
+                    var advertised = new Dictionary<ulong, string>();
+                    var advertisedUuids = new Dictionary<ulong, List<Guid>>();
+                    var watcher = new BluetoothLEAdvertisementWatcher { ScanningMode = BluetoothLEScanningMode.Active };
+                    watcher.Received += (s, args) =>
+                    {
+                        try
+                        {
+                            string name = args.Advertisement.LocalName ?? string.Empty;
+                            lock (advertised)
+                            {
+                                if (!advertised.ContainsKey(args.BluetoothAddress))
+                                {
+                                    advertised[args.BluetoothAddress] = name;
+                                    advertisedUuids[args.BluetoothAddress] = new List<Guid>(args.Advertisement.ServiceUuids);
+                                }
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    };
+                    watcher.Start();
+                    await Task.Delay(12000);
+                    watcher.Stop();
+
+                    var advertisedSnapshot = new List<KeyValuePair<ulong, string>>();
+                    var uuidsSnapshot = new Dictionary<ulong, List<Guid>>();
+                    lock (advertised)
+                    {
+                        foreach (var kvp in advertised)
+                        {
+                            advertisedSnapshot.Add(kvp);
+                            uuidsSnapshot[kvp.Key] = advertisedUuids[kvp.Key];
+                        }
+                    }
+
+                    if (AppConfig.Logging)
+                    {
+                        foreach (var kvp in advertisedSnapshot)
+                        {
+                            string uuids = string.Join(",", uuidsSnapshot[kvp.Key].Take(6).Select(u => u.ToString().Substring(4, 8)));
+                            Log($"  Advertised: addr={kvp.Key:X12}, name='{kvp.Value}', uuids=[{uuids}]");
+                        }
+                    }
+
+                    foreach (var kvp in advertisedSnapshot)
+                    {
+                            if (!seenAddresses.Add(kvp.Key))
+                            {
+                                continue; // already handled by a previous pass
+                            }
+
+                            BluetoothLEDevice advDevice = null;
+                            bool keepAdv = false;
+                            try
+                            {
+                                advDevice = await BluetoothLEDevice.FromBluetoothAddressAsync(kvp.Key);
+                                if (advDevice == null)
+                                {
+                                    if (AppConfig.Logging)
+                                    {
+                                        Log($"  Adv->BLE '{kvp.Value}': FromBluetoothAddressAsync returned null");
+                                    }
+                                    continue;
+                                }
+
+                                bool advHasBattery = false;
+                                using (GattDeviceService service = advDevice.GetGattService(BatteryServiceGuid))
+                                {
+                                    if (service != null)
+                                    {
+                                        GattCharacteristic characteristic = service.GetCharacteristics(BatteryLevelGuid).FirstOrDefault();
+                                        advHasBattery = characteristic != null;
+                                    }
+                                }
+
+                                string advKey = advDevice.BluetoothAddress.ToString("X16");
+
+                                if (AppConfig.Logging)
+                                {
+                                    Log($"  Adv->BLE '{advDevice.Name}': created, cached battery={advHasBattery}");
+                                }
+
+                                if (!advHasBattery && probedAddresses.Add(advKey))
+                                {
+                                    try
+                                    {
+                                        var enumTask = advDevice.GetGattServicesAsync().AsTask();
+                                        var completed = await Task.WhenAny(enumTask, Task.Delay(10000));
+                                        if (completed == enumTask)
+                                        {
+                                            var servicesResult = enumTask.Result;
+                                            if (AppConfig.Logging)
+                                            {
+                                                Log($"  Adv->BLE '{advDevice.Name}': enum status={servicesResult.Status}, services={servicesResult.Services.Count}");
+                                            }
+                                            if (servicesResult.Status == GattCommunicationStatus.Success)
+                                            {
+                                                advHasBattery = servicesResult.Services.Any(s => s.Uuid == BatteryServiceGuid);
+                                                if (!advHasBattery && AppConfig.Logging)
+                                                {
+                                                    string svcs = string.Join(", ", servicesResult.Services.Take(12).Select(s => s.Uuid.ToString().Substring(4, 8)));
+                                                    Log($"  Adv->BLE '{advDevice.Name}': no standard battery service, exposed: {svcs}");
+                                                }
+                                                foreach (var s in servicesResult.Services)
+                                                {
+                                                    s.Dispose();
+                                                }
+                                            }
+                                        }
+                                        else
+                                        {
+                                            Log($"  Adv->BLE '{advDevice.Name}': enum TIMEOUT after 10s");
+                                        }
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        Log($"  Adv->BLE '{advDevice.Name}': enum ERROR - {ex.Message}");
+                                    }
+                                }
+
+                                if (!advHasBattery)
+                                {
+                                    continue;
+                                }
+
+                                Log($"  Adv->BLE '{advDevice.Name}' [{advKey}]: battery service found (connected={advDevice.ConnectionStatus == BluetoothConnectionStatus.Connected})");
+
+                                bool advGamepad = false;
+                                try
+                                {
+                                    advGamepad = advDevice.Appearance.SubCategory == BluetoothLEAppearanceSubcategories.Gamepad;
+                                }
+                                catch
+                                {
+                                }
+
+                                var advExisting = pairedDevices.FirstOrDefault(d => d.AddressKey == advKey);
+                                if (advExisting != null)
+                                {
+                                    found.Add(advExisting);
+                                    continue;
+                                }
+
+                                var advEntry = new BleDevice(advDevice, advGamepad);
+                                deviceConfig.TryGetValue(advEntry.AddressKey, out var advConfig);
+                                if (advConfig == null)
+                                {
+                                    advConfig = new DeviceSettings { Enabled = advGamepad };
+                                    deviceConfig[advEntry.AddressKey] = advConfig;
+                                }
+                                advEntry.Config = advConfig;
+                                found.Add(advEntry);
+                                keepAdv = true;
+                            }
+                            catch (Exception ex)
+                            {
+                                if (AppConfig.Logging)
+                                {
+                                    Log($"  Adv->BLE '{kvp.Value}': ERROR - {ex.Message} (HResult=0x{ex.HResult:X8})");
+                                }
+                            }
+                            finally
+                            {
+                                if (!keepAdv && advDevice != null)
+                                {
+                                    advDevice.Dispose();
+                                }
+                            }
+                        }
+                }
+                catch (Exception ex)
+                {
+                    Log("Advertisement pass failed: " + ex.Message);
+                }
+
+                // fifth pass: Windows exposes earbud/speaker battery via Power Battery child
+                // nodes (bthport creates them while the classic audio connection is active).
+                try
+                {
+                    var batteryNodes = await DeviceInformation.FindAllAsync(Battery.GetDeviceSelector());
+                    if (AppConfig.Logging)
+                    {
+                        Log($"Battery pass: {batteryNodes.Count} battery node(s)");
+                    }
+                    foreach (var b in batteryNodes)
+                    {
+                        if (AppConfig.Logging)
+                        {
+                            Log($"  Battery node: name='{b.Name}', id={b.Id}");
+                        }
+                        Battery battery = await Battery.FromIdAsync(b.Id);
+                        if (battery == null)
+                        {
+                            if (AppConfig.Logging)
+                            {
+                                Log($"  Battery node '{b.Name}': FromIdAsync returned null");
+                            }
+                            continue;
+                        }
+                        var report = battery.GetReport();
+                        double percent = -1;
+                        if (report.RemainingCapacityInMilliwattHours != null && report.FullChargeCapacityInMilliwattHours != null && report.FullChargeCapacityInMilliwattHours > 0)
+                        {
+                            percent = (double)report.RemainingCapacityInMilliwattHours.Value / report.FullChargeCapacityInMilliwattHours.Value * 100.0;
+                        }
+                        if (AppConfig.Logging)
+                        {
+                            Log($"  Battery node '{b.Name}': remaining={report.RemainingCapacityInMilliwattHours}, full={report.FullChargeCapacityInMilliwattHours}, percent={percent:F0}, status={report.Status}");
+                        }
+                        battery.ReportUpdated -= BatteryNode_ReportUpdated;
+                        battery.ReportUpdated += BatteryNode_ReportUpdated;
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Log("Battery pass failed: " + ex.Message);
+                }
+
+                // full commit: slow passes (classic bridge, advertisement watch, battery nodes)
+                // may have found additional devices; publish everything now
+                CommitFoundDevices(found, totalEntries, bleInterfaces, fromIdFailed, "full");
+
+                // the Bluetooth radio may have just turned on while the BLE stack was still
+                // starting up: if the scan saw no BLE interfaces at all, retry shortly
+                if (bleInterfaces == 0 && !rescanScheduled)
+                {
+                    rescanScheduled = true;
+                    Log("Discovery: 0 BLE interfaces seen, scheduling a re-scan in 10s");
+                    var rescanTimer = new Timer { Interval = 10000 };
+                    rescanTimer.Tick += (s, e) =>
+                    {
+                        rescanTimer.Stop();
+                        rescanTimer.Dispose();
+                        rescanScheduled = false;
+                        FindBleDevices();
+                    };
+                    rescanTimer.Start();
                 }
             }
-            else
+            catch (Exception e)
             {
-                Log("Discovery: Bluetooth radio is OFF, skipping device scan");
-                SetIcon(-1, "!");
-                notifyIcon.Text = Localization.Tr("StatusBleOff");
+                Log("Discovery: ERROR - " + e.Message);
+            }
+            finally
+            {
+                discoveryRunning = false;
             }
         }
 
@@ -503,15 +1184,32 @@ namespace XBatteryStatus
             FindBleDevices();
         }
 
-        private void ConnectionStatusChanged(BluetoothLEDevice sender, object args)
+        private async void BatteryNode_ReportUpdated(Battery sender, object args)
         {
+            try
+            {
+                var report = sender.GetReport();
+                double percent = -1;
+                if (report.RemainingCapacityInMilliwattHours != null && report.FullChargeCapacityInMilliwattHours != null && report.FullChargeCapacityInMilliwattHours > 0)
+                {
+                    percent = (double)report.RemainingCapacityInMilliwattHours.Value / report.FullChargeCapacityInMilliwattHours.Value * 100.0;
+                }
+                Log($"Battery node report updated: remaining={report.RemainingCapacityInMilliwattHours}, full={report.FullChargeCapacityInMilliwattHours}, percent={percent:F0}, status={report.Status}");
+            }
+            catch (Exception e)
+            {
+                LogError(e);
+            }
+        }
+
+        private async void ConnectionStatusChanged(BluetoothLEDevice sender, object args)        {
             var device = pairedDevices.FirstOrDefault(d => d.Device == sender);
             if (device == null) return;
 
             if (sender.ConnectionStatus == BluetoothConnectionStatus.Connected)
             {
                 Log($"Device CONNECTED: {device.DeviceName} [{device.AddressKey}] (last battery {(device.LastBattery >= 0 ? device.LastBattery + "%" : "unknown")})");
-                AcquireBatteryService(device);
+                await AcquireBatteryService(device);
                 PollBatteries();
             }
             else
@@ -524,7 +1222,7 @@ namespace XBatteryStatus
         }
 
         /// <summary>Re-acquires the battery service/characteristic of a freshly connected device.</summary>
-        private void AcquireBatteryService(BleDevice device)
+        private async Task AcquireBatteryService(BleDevice device)
         {
             try
             {
@@ -543,10 +1241,39 @@ namespace XBatteryStatus
                     {
                         device.BatteryService = service;
                         device.BatteryCharacteristic = characteristic;
+                        return;
                     }
-                    else
+                    service.Dispose();
+                }
+
+                // cached lookup failed: perform a real service enumeration (needed for devices
+                // whose GATT cache is still empty, e.g. headphones paired over classic audio)
+                if (device.Connected)
+                {
+                    try
                     {
-                        service.Dispose();
+                        var servicesResult = await device.Device.GetGattServicesAsync();
+                        if (servicesResult.Status == GattCommunicationStatus.Success)
+                        {
+                            foreach (var s in servicesResult.Services)
+                            {
+                                if (s.Uuid == BatteryServiceGuid)
+                                {
+                                    GattCharacteristic characteristic = s.GetCharacteristics(BatteryLevelGuid).FirstOrDefault();
+                                    if (characteristic != null)
+                                    {
+                                        device.BatteryService = s;
+                                        device.BatteryCharacteristic = characteristic;
+                                        break;
+                                    }
+                                }
+                                s.Dispose();
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Log($"AcquireBatteryService enum failed for {device.DeviceName}: {e.Message}");
                     }
                 }
             }
@@ -558,9 +1285,12 @@ namespace XBatteryStatus
 
         // ---------- polling ----------
 
-        public List<BleDevice> GetDevices()
+        public List<IBatteryDevice> GetDevices()
         {
-            return pairedDevices;
+            var list = new List<IBatteryDevice>();
+            list.AddRange(pairedDevices);
+            list.AddRange(pnpDevices);
+            return list;
         }
 
         private int GetPollIntervalMs()
@@ -573,7 +1303,7 @@ namespace XBatteryStatus
             DeviceConfig.Save(deviceConfig);
             UpdateTimer.Interval = GetPollIntervalMs();
             Log($"Device config applied: pollInterval={AppConfig.PollInterval}s");
-            foreach (var device in pairedDevices)
+            foreach (var device in GetDevices())
             {
                 Log($"  {device.DisplayName} [{device.AddressKey}]: enabled={device.Config.Enabled}, levels=[{string.Join(",", device.Config.Levels ?? new[] { 0 })}], customName='{device.Config.CustomName}'");
             }
@@ -585,13 +1315,8 @@ namespace XBatteryStatus
             var connectedDevices = pairedDevices.Where(d => d.Connected).ToList();
             if (connectedDevices.Count == 0)
             {
-                Log("Poll: no connected devices");
-                SetIcon(-1, "!");
-                notifyIcon.Text = Localization.Tr("StatusDisconnected");
-                return;
+                Log("Poll: no connected Bluetooth devices");
             }
-
-            BleDevice trayDevice = connectedDevices.FirstOrDefault(d => d.IsGamepad) ?? connectedDevices[0];
 
             foreach (var device in connectedDevices)
             {
@@ -605,23 +1330,356 @@ namespace XBatteryStatus
                 }
             }
 
-            if (trayDevice.LastBattery >= 0)
+            await RefreshPnpBatteries(true);
+
+            PollXInput();
+            UpdateTrayIcon();
+        }
+
+        /// <summary>
+        /// Reads the PnP battery property ({104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2) that Windows
+        /// publishes for Bluetooth devices (LE and classic audio/HFP). Devices are created on first
+        /// sight; the live value is pushed into LastBattery each call. Alerts only fire when
+        /// fireAlerts is true (polling), not during a discovery refresh.
+        /// </summary>
+        private async Task RefreshPnpBatteries(bool fireAlerts, HashSet<string> knownLeKeys = null)
+        {
+            try
             {
-                SetIcon(trayDevice.LastBattery);
-                notifyIcon.Text = Localization.Tr("StatusBattery", trayDevice.LastBattery + "% - " + trayDevice.DisplayName);
+                const string batteryKey = "{104EA319-6EE2-4701-BD47-8DDBF425BBE5} 2";
+                var batteryDevices = await DeviceInformation.FindAllAsync(null, new[] { batteryKey }, DeviceInformationKind.Device);
+
+                // connected state: the classic Bluetooth link must be up for the battery to be current.
+                // Windows keeps showing the last known value in the property even after disconnect.
+                var classicConnected = new Dictionary<string, bool>();
+                try
+                {
+                    var classicDevs = await DeviceInformation.FindAllAsync(BluetoothDevice.GetDeviceSelector());
+                    foreach (var cd in classicDevs)
+                    {
+                        try
+                        {
+                            var bd = await BluetoothDevice.FromIdAsync(cd.Id);
+                            if (bd != null)
+                            {
+                                classicConnected["0000" + bd.BluetoothAddress.ToString("X12")] = bd.ConnectionStatus == BluetoothConnectionStatus.Connected;
+                            }
+                        }
+                        catch
+                        {
+                        }
+                    }
+                }
+                catch
+                {
+                }
+
+                var seenKeys = new HashSet<string>();
+                foreach (var d in batteryDevices)
+                {
+                    if (!d.Properties.TryGetValue(batteryKey, out var value) || value == null) continue;
+                    if (!d.Id.Contains("BTH", StringComparison.OrdinalIgnoreCase)) continue;
+
+                    string address = null;
+                    foreach (System.Text.RegularExpressions.Match m in System.Text.RegularExpressions.Regex.Matches(d.Id, "Dev_([0-9A-Fa-f]{12})|&0&([0-9A-Fa-f]{12})_"))
+                    {
+                        address = m.Groups[1].Success ? m.Groups[1].Value : (m.Groups[2].Success ? m.Groups[2].Value : null);
+                        if (address != null) break;
+                    }
+                    if (address == null) continue;
+
+                    string addrKey = "0000" + address.ToUpperInvariant();
+                    seenKeys.Add(addrKey);
+
+                    // physical device already covered by the LE/GATT path (current scan or last scan)
+                    bool knownLe = pairedDevices.Any(p => p.AddressKey == addrKey) || (knownLeKeys != null && knownLeKeys.Contains(addrKey));
+                    if (knownLe) continue;
+
+                    var existing = pnpDevices.FirstOrDefault(p => p.AddressKey == addrKey);
+                    if (existing == null)
+                    {
+                        existing = new PnpBatteryDevice(d.Id, d.Name);
+                        deviceConfig.TryGetValue(addrKey, out var cfg);
+                        if (cfg == null)
+                        {
+                            cfg = new DeviceSettings();
+                            deviceConfig[addrKey] = cfg;
+                        }
+                        existing.Config = cfg;
+                        pnpDevices.Add(existing);
+                        Log($"PnP battery device discovered: '{d.Name}' [{addrKey}] ({d.Id})");
+                    }
+
+                    if (int.TryParse(value.ToString(), out int percent) && percent >= 0 && percent <= 100)
+                    {
+                        if (fireAlerts && existing.LastBattery >= 0 && existing.Config.Enabled)
+                        {
+                            CheckBatteryLevelCrossing(existing.Config, existing.LastBattery, percent, existing.DisplayName, existing.AddressKey);
+                        }
+                        else if (fireAlerts && existing.LastBattery < 0 && existing.Config.Enabled)
+                        {
+                            CheckFirstReadLevelCrossing(existing.Config, percent, existing.DisplayName, existing.AddressKey);
+                        }
+                        existing.LastBattery = percent;
+                        existing.HasValue = true;
+                        Log($"PnP battery read {existing.DisplayName} [{existing.AddressKey}]: {percent}% (enabled={existing.Config.Enabled}, levels=[{string.Join(",", existing.Config.Levels ?? new[] { 0 })}])");
+                    }
+                }
+
+                // drop PnP entries for physical devices now covered by the LE/GATT path
+                var leKeys = new HashSet<string>(pairedDevices.Select(p => p.AddressKey));
+                if (knownLeKeys != null) leKeys.UnionWith(knownLeKeys);
+                pnpDevices.RemoveAll(p => leKeys.Contains(p.AddressKey));
+
+                // mark devices whose battery property disappeared as disconnected (keep last value)
+                foreach (var device in pnpDevices)
+                {
+                    bool seen = seenKeys.Contains(device.AddressKey);
+                    bool connected = seen && classicConnected.TryGetValue(device.AddressKey, out bool conn) && conn;
+                    if (!connected && device.HasValue)
+                    {
+                        Log($"PnP battery device gone: {device.DisplayName} [{device.AddressKey}] (last {device.LastBattery}%)");
+                    }
+                    device.HasValue = seen;
+                    device.IsConnected = connected;
+                }
+            }
+            catch (Exception ex)
+            {
+                Log("PnP battery pass failed: " + ex.Message);
+            }
+        }
+
+        private void CheckBatteryLevelCrossing(DeviceSettings config, int lastBattery, int val, string displayName, string addressKey)
+        {
+            int[] levels = config.Levels;
+            if (levels == null || levels.Length != 3) levels = new[] { 35, 30, 25 };
+
+            foreach (int level in levels)
+            {
+                if (level >= 1 && level <= 100 && lastBattery > level && val <= level)
+                {
+                    Log($"ALERT TRIGGERED for {displayName} [{addressKey}]: {lastBattery}% -> {val}% crossed level {level}%");
+                    BatteryAlertOverlay.ShowAlert(val, displayName);
+                    break;
+                }
+            }
+        }
+
+        private void CheckFirstReadLevelCrossing(DeviceSettings config, int val, string displayName, string addressKey)
+        {
+            int[] levels = config.Levels;
+            if (levels == null || levels.Length != 3) levels = new[] { 35, 30, 25 };
+
+            foreach (int level in levels)
+            {
+                if (level >= 1 && level <= 100 && val <= level)
+                {
+                    Log($"ALERT TRIGGERED for {displayName} [{addressKey}]: first read is {val}% which is at/below level {level}%");
+                    BatteryAlertOverlay.ShowAlert(val, displayName);
+                    break;
+                }
+            }
+        }
+
+        // ---------- XInput (wireless adapter) ----------
+
+        private readonly int[] xinputLastLevel = { -1, -1, -1, -1 };
+        private readonly bool[] xinputConnected = { false, false, false, false };
+
+        /// <summary>Polls the Xbox Wireless Adapter slots and triggers alerts when a level is crossed.</summary>
+        private void PollXInput()
+        {
+            for (int slot = 0; slot < XInputHelper.MaxSlots; slot++)
+            {
+                var level = XInputHelper.GetWirelessBatteryLevel(slot);
+                if (level == null)
+                {
+                    if (xinputConnected[slot])
+                    {
+                        xinputConnected[slot] = false;
+                        Log($"XInput slot {slot + 1}: DISCONNECTED (last level {(xinputLastLevel[slot] >= 0 ? LevelName((XInputLevel)xinputLastLevel[slot]) : "unknown")})");
+                    }
+                    continue;
+                }
+
+                bool wasConnected = xinputConnected[slot];
+                xinputConnected[slot] = true;
+
+                var config = GetXInputConfig(slot);
+                int val = (int)level.Value;
+                int prev = xinputLastLevel[slot];
+
+                if (config.Enabled)
+                {
+                    if (prev >= 0)
+                    {
+                        CheckXInputAlerts(slot, config, prev, val);
+                    }
+                    else if (IsAtOrBelowConfigured(val, config))
+                    {
+                        // first read after connect: alert once if already at/below a configured level
+                        Log($"XInput slot {slot + 1}: ALERT TRIGGERED - first read after connect is {LevelName(level.Value)} which is at/below a configured level");
+                        BatteryAlertOverlay.ShowAlert(MapLevelToPercent(level.Value), XInputDisplayName(slot));
+                    }
+                }
+
+                xinputLastLevel[slot] = val;
+                Log($"XInput slot {slot + 1}: {LevelName(level.Value)} (prev {(prev >= 0 ? LevelName((XInputLevel)prev) : "unknown")}, connected={(wasConnected ? "yes" : "no")}, enabled={config.Enabled}, levels=[{string.Join(",", config.Levels ?? new[] { -1 })}])");
+            }
+        }
+
+        private void CheckXInputAlerts(int slot, DeviceSettings config, int prev, int val)
+        {
+            int[] levels = config.Levels;
+            if (levels == null || levels.Length != 3) levels = new[] { 2, 1, 0 };
+
+            foreach (int level in levels)
+            {
+                if (level >= 0 && level <= 3 && prev > level && val <= level)
+                {
+                    Log($"XInput slot {slot + 1}: ALERT TRIGGERED: {LevelName((XInputLevel)prev)} -> {LevelName((XInputLevel)val)} crossed {LevelName((XInputLevel)level)}");
+                    BatteryAlertOverlay.ShowAlert(MapLevelToPercent((XInputLevel)val), XInputDisplayName(slot));
+                    break;
+                }
+            }
+        }
+
+        private static bool IsAtOrBelowConfigured(int val, DeviceSettings config)
+        {
+            int[] levels = config.Levels;
+            if (levels == null || levels.Length != 3) levels = new[] { 2, 1, 0 };
+            foreach (int level in levels)
+            {
+                if (level >= 0 && level <= 3 && val <= level) return true;
+            }
+            return false;
+        }
+
+        private DeviceSettings GetXInputConfig(int slot)
+        {
+            string key = "xinput:" + slot;
+            if (!deviceConfig.TryGetValue(key, out var config))
+            {
+                config = new DeviceSettings { Enabled = true, Levels = new[] { 2, 1, 0 } }; // Medium / Low / Empty
+                deviceConfig[key] = config;
+            }
+            return config;
+        }
+
+        public DeviceSettings GetXInputConfigPublic(int slot) => GetXInputConfig(slot);
+
+        public bool IsXInputConnected(int slot)
+        {
+            return slot >= 0 && slot < XInputHelper.MaxSlots && xinputConnected[slot] && xinputLastLevel[slot] >= 0;
+        }
+
+        public int GetXInputLevel(int slot)
+        {
+            return (slot >= 0 && slot < XInputHelper.MaxSlots) ? xinputLastLevel[slot] : -1;
+        }
+
+        public string XInputDisplayName(int slot)
+        {
+            return Localization.Tr("XboxControllerSlot", slot + 1) + " (" + Localization.Tr("Adapter") + ")";
+        }
+
+        public static string LevelName(XInputLevel level)
+        {
+            return level switch
+            {
+                XInputLevel.Full => Localization.Tr("BatteryFull"),
+                XInputLevel.Medium => Localization.Tr("BatteryMedium"),
+                XInputLevel.Low => Localization.Tr("BatteryLow"),
+                _ => Localization.Tr("BatteryEmpty")
+            };
+        }
+
+        public static int MapLevelToPercent(XInputLevel level)
+        {
+            return level switch
+            {
+                XInputLevel.Full => 100,
+                XInputLevel.Medium => 66,
+                XInputLevel.Low => 33,
+                _ => 0
+            };
+        }
+
+        /// <summary>Updates the tray icon: Bluetooth gamepad first, then Bluetooth, then the adapter.</summary>
+        private void UpdateTrayIcon()
+        {
+            var lines = new List<string>();
+            int? xinputTray = null;
+            PnpBatteryDevice pnpTray = null;
+
+            var bleConnected = pairedDevices.Where(d => d.Connected).ToList();
+            foreach (var device in bleConnected)
+            {
+                lines.Add(device.LastBattery >= 0
+                    ? Localization.Tr("StatusBattery", device.LastBattery + "% - " + device.DisplayName)
+                    : Localization.Tr("StatusDisconnected"));
+            }
+
+            for (int slot = 0; slot < XInputHelper.MaxSlots; slot++)
+            {
+                if (IsXInputConnected(slot))
+                {
+                    lines.Add(XInputDisplayName(slot) + ": " + LevelName((XInputLevel)xinputLastLevel[slot]));
+                    xinputTray ??= slot;
+                }
+            }
+
+            foreach (var device in pnpDevices.Where(d => d.IsConnected))
+            {
+                lines.Add(device.LastBattery >= 0
+                    ? Localization.Tr("StatusBattery", device.LastBattery + "% - " + device.DisplayName)
+                    : Localization.Tr("StatusDisconnected"));
+                pnpTray ??= device;
+            }
+
+            if (lines.Count == 0)
+            {
+                SetIcon(-1, "!");
+                notifyIcon.Text = Localization.Tr("StatusDisconnected");
+                return;
+            }
+
+            // icon graphic source priority: gamepad BLE > first BLE > XInput > PnP
+            BleDevice iconBle = bleConnected.FirstOrDefault(d => d.IsGamepad) ?? bleConnected.FirstOrDefault();
+            if (iconBle != null)
+            {
+                if (iconBle.LastBattery >= 0)
+                {
+                    SetIcon(iconBle.LastBattery);
+                }
+                else
+                {
+                    SetIcon(-1, "!");
+                }
+            }
+            else if (xinputTray != null)
+            {
+                SetIcon(MapLevelToPercent((XInputLevel)xinputLastLevel[xinputTray.Value]));
+            }
+            else if (pnpTray != null && pnpTray.LastBattery >= 0)
+            {
+                SetIcon(pnpTray.LastBattery);
             }
             else
             {
                 SetIcon(-1, "!");
-                notifyIcon.Text = Localization.Tr("StatusDisconnected");
             }
+
+            // multi-line tooltip: one line per connected device (separated by newline)
+            notifyIcon.Text = string.Join("\n", lines);
         }
 
         private async Task ReadBattery(BleDevice device)
         {
             if (!device.Connected || device.BatteryCharacteristic == null)
             {
-                AcquireBatteryService(device);
+                await AcquireBatteryService(device);
             }
             if (device.BatteryCharacteristic == null)
             {
@@ -710,18 +1768,7 @@ namespace XBatteryStatus
 
         private void UpdateStatusText()
         {
-            var connected = pairedDevices.Where(d => d.Connected).ToList();
-            if (connected.Count == 0)
-            {
-                notifyIcon.Text = Localization.Tr("StatusDisconnected");
-            }
-            else
-            {
-                var trayDevice = connected.FirstOrDefault(d => d.IsGamepad) ?? connected[0];
-                notifyIcon.Text = trayDevice.LastBattery >= 0
-                    ? Localization.Tr("StatusBattery", trayDevice.LastBattery + "% - " + trayDevice.DisplayName)
-                    : Localization.Tr("StatusBattery", trayDevice.DisplayName);
-            }
+            UpdateTrayIcon();
         }
 
         // ---------- misc UI handlers ----------
@@ -936,8 +1983,7 @@ namespace XBatteryStatus
             return bitmap;
         }
 
-        private async void Log(string s)
-        {
+        private async void Log(string s)        {
 #if DEBUG
             Console.WriteLine(s);
 #else
@@ -973,3 +2019,4 @@ namespace XBatteryStatus
         }
     }
 }
+

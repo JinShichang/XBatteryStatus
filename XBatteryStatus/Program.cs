@@ -55,6 +55,18 @@ namespace XBatteryStatus
                 return;
             }
 
+            // screenshot-test the devices window
+            if (args.Any(a => a.Equals("--test-devices", StringComparison.OrdinalIgnoreCase)))
+            {
+                var ctx = new MyApplicationContext();
+                var form = new DevicesForm(ctx);
+                var closeTimer = new Timer { Interval = 40000 };
+                closeTimer.Tick += (s, e) => { closeTimer.Stop(); form.Close(); Application.Exit(); };
+                closeTimer.Start();
+                form.ShowDialog();
+                return;
+            }
+
             var proc = Process.GetCurrentProcess();
             Process[] processes = Process.GetProcessesByName(proc.ProcessName);
 
@@ -77,3 +89,5 @@ namespace XBatteryStatus
         }
     }
 }
+
+
