@@ -125,12 +125,17 @@ Unterstützt mehrere Geräte
 
 ## 🙏 Referenzen & Danksagung
 
-https://github.com/NiyaShy/XB1ControllerBatteryIndicator
-https://github.com/tommaier123/XBatteryStatus
-https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
-https://github.com/gopi470/Nox
-https://github.com/SpartanX1/bluetooth_classic_battery_windows
-https://github.com/o0Zz/PeripheralBatteryMonitor
+> https://github.com/NiyaShy/XB1ControllerBatteryIndicator
+
+> https://github.com/tommaier123/XBatteryStatus
+
+> https://github.com/SteamAchievementNotifier/SteamAchievementNotifier
+
+> https://github.com/gopi470/Nox
+
+> https://github.com/SpartanX1/bluetooth_classic_battery_windows
+
+> https://github.com/o0Zz/PeripheralBatteryMonitor
 
 ## 🍋 Unterstützung
 
