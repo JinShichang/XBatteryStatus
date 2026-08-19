@@ -207,6 +207,8 @@ namespace XBatteryStatus
         {
             titleFont?.Dispose();
             subFont?.Dispose();
+            // 只按 PopupScale 缩放：弹窗按 96 DPI 逻辑尺寸渲染并通过 UpdateLayeredWindow 1:1 显示，
+            // 不再乘系统 DPI，避免高缩放下字体过大/溢出（与 2K 100% 表现一致）
             float scale = AppConfig.PopupScale;
             titleFont = CreateFont(AppConfig.PopupTitleFontFamily, AppConfig.PopupTitleFontSize * scale, AppConfig.PopupTitleFontBold ? FontStyle.Bold : FontStyle.Regular);
             subFont = CreateFont(AppConfig.PopupSubFontFamily, AppConfig.PopupSubFontSize * scale, AppConfig.PopupSubFontBold ? FontStyle.Bold : FontStyle.Regular);
@@ -230,44 +232,140 @@ namespace XBatteryStatus
 
         private void SetupLayout()
         {
+            // 布局按 PopupScale × dpiRatio 缩放：位图在 SystemAware 下以系统 DPI（如 144）创建，
+            // 点阵字体会自动按该 DPI 渲染为 1.5 倍；布局同步放大 1.5 倍后比例与 2K 100% 一致。
+            // 字体本身只乘 PopupScale（不再乘 dpiRatio，避免被位图 DPI 二次放大成 2.25 倍）。
             float dpiRatio = GetDpiForSystem() / 96f;
             effScale = AppConfig.PopupScale * dpiRatio;
 
-            float titleW, subW, titleH, subH;
+            float titleH, subH;
             using (var measureBmp = new Bitmap(1, 1))
             using (var g = Graphics.FromImage(measureBmp))
             {
                 g.TextRenderingHint = TextRenderingHint.AntiAlias;
-                titleW = g.MeasureString(titleText, titleFont, int.MaxValue, StringFormat.GenericTypographic).Width;
-                subW = g.MeasureString(subtitleText, subFont, int.MaxValue, StringFormat.GenericTypographic).Width;
-                titleH = titleFont.GetHeight(96f);
-                subH = subFont.GetHeight(96f);
+                // GetHeight(g) 按测量 Graphics 的 DPI（= 位图/渲染 DPI，4K 150% 下为 144）
+                // 计算实际渲染高度，避免按 96 硬算导致文字块偏小、垂直溢出
+                titleH = titleFont.GetHeight(g);
+                subH = subFont.GetHeight(g);
             }
 
-            // convert the 96 dpi measurements to physical pixels
-            titleW *= dpiRatio;
-            subW *= dpiRatio;
-            titleH *= dpiRatio;
-            subH *= dpiRatio;
             this.titleH = titleH;
             textGap = 4f * effScale;
             textBlockH = titleH + textGap + subH;
 
-            fullPillW = Math.Max(MinPillW, Math.Min(MaxPillW, PillH + TextGapX + Math.Max(titleW, subW) + RightPad)) * effScale;
-
-            winW = (int)Math.Ceiling(fullPillW + Pad * 2f * effScale);
+            // two-pass sizing: estimate on a scratch surface, then re-measure on the actual
+            // render bitmap so the pill fits the text exactly as DrawString renders it
+            // (GDI+ measure/draw mismatch grows with the DPI scale factor and caused the
+            // subtitle to overflow the pill at high scaling)
             winH = (int)Math.Ceiling((PillH + Pad * 2f) * effScale);
+            float estW = MeasureMaxTextWidth(null);
+            winW = (int)Math.Ceiling(ComputeWinW(estW));
+
+            bmp?.Dispose();
+            bmp = new Bitmap(winW, winH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+
+            float exactW = MeasureMaxTextWidth(bmp);
+            if (exactW > estW + 0.5f)
+            {
+                winW = (int)Math.Ceiling(ComputeWinW(exactW));
+                bmp.Dispose();
+                bmp = new Bitmap(winW, winH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            }
+
+            fullPillW = winW - Pad * 2f * effScale;
 
             Point center = GetPopupCenter();
             Bounds = new Rectangle(center.X - winW / 2, center.Y - winH / 2, winW, winH);
 
-            bmp?.Dispose();
-            bmp = new Bitmap(winW, winH, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            MyApplicationContext.LogStatic($"Popup layout: dpi={GetDpiForSystem()}, popupScale={AppConfig.PopupScale}, effScale={effScale:F2}, textW={exactW:F0}, winW={winW}, winH={winH}");
+        }
+
+        private float MeasureMaxTextWidth(Bitmap surface)
+        {
+            Bitmap target = surface ?? new Bitmap(1, 1);
+            try
+            {
+                using (var g = Graphics.FromImage(target))
+                {
+                    g.TextRenderingHint = TextRenderingHint.AntiAlias;
+                    float titleW = g.MeasureString(titleText, titleFont, int.MaxValue, StringFormat.GenericTypographic).Width;
+                    float subW = g.MeasureString(subtitleText, subFont, int.MaxValue, StringFormat.GenericTypographic).Width;
+                    // safety margin so glyphs never touch the pill edge
+                    return Math.Max(titleW, subW) + 6f * effScale;
+                }
+            }
+            finally
+            {
+                if (!ReferenceEquals(target, surface)) target.Dispose();
+            }
+        }
+
+        private float ComputeWinW(float maxTextW)
+        {
+            // no upper clamp: the pill must always be wide enough to hold the text,
+            // otherwise long device names get clipped by the rounded right edge at high DPI
+            float contentW = (PillH + TextGapX + RightPad) * effScale + maxTextW;
+            fullPillW = Math.Max(MinPillW * effScale, contentW);
+            return fullPillW + Pad * 2f * effScale;
         }
 
         private float textBlockH;
         private float textGap;
         private float titleH;
+
+        /// <summary>Dumps all popup rendering parameters to a file for DPI debugging.</summary>
+        internal string WriteDiagnostics(string path)
+        {
+            var sb = new System.Text.StringBuilder();
+            sb.AppendLine("== Popup diagnostics ==");
+            sb.AppendLine("GetDpiForSystem() = " + GetDpiForSystem());
+            sb.AppendLine("Form.DeviceDpi = " + DeviceDpi);
+            sb.AppendLine("AppConfig.PopupScale = " + AppConfig.PopupScale);
+            sb.AppendLine("effScale = " + effScale);
+            sb.AppendLine("winW = " + winW + ", winH = " + winH);
+            sb.AppendLine("fullPillW = " + fullPillW);
+            if (bmp != null)
+            {
+                sb.AppendLine($"bmp: {bmp.Width}x{bmp.Height}, HorRes={bmp.HorizontalResolution}, VerRes={bmp.VerticalResolution}, PixelFormat={bmp.PixelFormat}");
+                using (var g = Graphics.FromImage(bmp))
+                {
+                    sb.AppendLine($"render Graphics: DpiX={g.DpiX}, DpiY={g.DpiY}, PageUnit={g.PageUnit}");
+                    if (titleFont != null)
+                    {
+                        sb.AppendLine($"titleFont: family={titleFont.FontFamily.Name}, Size={titleFont.Size}, SizeInPoints={titleFont.SizeInPoints}, Height={titleFont.Height}, Unit={titleFont.Unit}");
+                        sb.AppendLine($"titleFont.GetHeight(96)={titleFont.GetHeight(96f)}, GetHeight(g)={titleFont.GetHeight(g)}");
+                        sb.AppendLine($"title measured on bmp g: {g.MeasureString(titleText ?? "", titleFont, int.MaxValue, StringFormat.GenericTypographic).Width}");
+                    }
+                    if (subFont != null)
+                    {
+                        sb.AppendLine($"subFont: family={subFont.FontFamily.Name}, Size={subFont.Size}, SizeInPoints={subFont.SizeInPoints}, Height={subFont.Height}, Unit={subFont.Unit}");
+                        sb.AppendLine($"subFont.GetHeight(96)={subFont.GetHeight(96f)}, GetHeight(g)={subFont.GetHeight(g)}");
+                        sb.AppendLine($"subtitle measured on bmp g: {g.MeasureString(subtitleText ?? "", subFont, int.MaxValue, StringFormat.GenericTypographic).Width}");
+                    }
+                }
+            }
+            using (var m = new Bitmap(1, 1))
+            using (var g = Graphics.FromImage(m))
+            {
+                sb.AppendLine($"measure Graphics (1x1): DpiX={g.DpiX}, DpiY={g.DpiY}, PageUnit={g.PageUnit}");
+                if (titleFont != null)
+                {
+                    sb.AppendLine($"title measured on 1x1 g: {g.MeasureString(titleText ?? "", titleFont, int.MaxValue, StringFormat.GenericTypographic).Width}");
+                }
+                if (subFont != null)
+                {
+                    sb.AppendLine($"subtitle measured on 1x1 g: {g.MeasureString(subtitleText ?? "", subFont, int.MaxValue, StringFormat.GenericTypographic).Width}");
+                }
+            }
+            string text = sb.ToString();
+            try { System.IO.File.WriteAllText(path, text); }
+            catch
+            {
+                try { System.IO.File.WriteAllText(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "popup_diag.txt"), text); }
+                catch { }
+            }
+            return text;
+        }
 
         // ---------- animation ----------
 

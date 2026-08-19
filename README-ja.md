@@ -121,7 +121,6 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 
 - A: XInput は 4 段階（Empty 空 / Low 低 / Medium 中 / Full 満）しか提供せず、Bluetooth GATT のような正確なパーセントはありません。これは XInput プロトコル自体の制限であり、どうすることもできません。
 
-複数デバイス対応
 
 ## 🙏 参考・謝辞
 

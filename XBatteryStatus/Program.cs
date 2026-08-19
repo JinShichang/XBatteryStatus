@@ -32,6 +32,24 @@ namespace XBatteryStatus
                 return;
             }
 
+            // dump popup rendering parameters for DPI debugging
+            if (args.Any(a => a.Equals("--diag-popup", StringComparison.OrdinalIgnoreCase)))
+            {
+                var overlay = new BatteryAlertOverlay(15, "Xbox Wireless Controller", false);
+                try
+                {
+                    string text = overlay.WriteDiagnostics(System.IO.Path.Combine(AppContext.BaseDirectory, "popup_diag.txt"));
+                    System.IO.File.WriteAllText(System.IO.Path.GetTempPath() + "popup_diag.txt", text);
+                }
+                catch (Exception ex)
+                {
+                    System.IO.File.WriteAllText(System.IO.Path.Combine(AppContext.BaseDirectory, "popup_diag.txt"), "ERROR: " + ex);
+                }
+                overlay.Close();
+                Application.Exit();
+                return;
+            }
+
             // screenshot-test the popup settings dialog
             if (args.Any(a => a.Equals("--test-dialog", StringComparison.OrdinalIgnoreCase)))
             {

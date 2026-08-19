@@ -121,7 +121,6 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 
 - О: XInput предоставляет только 4 уровня (Empty пусто / Low низкий / Medium средний / Full полный) и не даёт точных процентов, как GATT по Bluetooth. Это ограничение самого протокола XInput, и я ничего не могу с этим поделать.
 
-Поддерживает несколько устройств
 
 ## 🙏 Ссылки и благодарности
 

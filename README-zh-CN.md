@@ -121,7 +121,6 @@ dotnet build XBatteryStatus/XBatteryStatus.csproj -c Release
 
 - A: XInput 只提供 4 档电量（Empty 空 / Low 低 / Medium 中 / Full 满），没有蓝牙 GATT 那种精确百分比——这是 XInput 协议本身的限制，我对此无能无力。
 
-支持多种设备
 
 ## 🙏 参考与致谢
 

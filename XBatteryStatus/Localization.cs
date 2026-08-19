@@ -91,6 +91,7 @@ namespace XBatteryStatus
             ("Sound", "Sound", "提示音", "Звук", "Sonido", "Som", "Ton", "サウンド", "Son", "Dźwięk", "소리", "الصوت"),
             ("Mute", "Mute", "静音", "Без звука", "Silencio", "Sem som", "Stumm", "ミュート", "Muet", "Wycisz", "음소거", "كتم الصوت"),
             ("EnableLogging", "Enable Logging", "启用日志", "Вести журнал", "Habilitar registro", "Ativar registro", "Protokollierung aktivieren", "ログを有効にする", "Activer le journal", "Włącz dziennik", "로그 활성화", "تفعيل السجل"),
+            ("Battery", "Battery", "电量", "Заряд", "Batería", "Bateria", "Akku", "バッテリー", "Batterie", "Bateria", "배터리", "البطارية"),
             ("BatteryFull", "Full", "满", "Полный", "Lleno", "Cheio", "Voll", "満", "Plein", "Pełny", "가득", "ممتلئ"),
             ("BatteryMedium", "Medium", "中", "Средний", "Medio", "Médio", "Mittel", "中", "Moyen", "Średni", "중간", "متوسط"),
             ("BatteryLow", "Low", "低", "Низкий", "Bajo", "Baixo", "Niedrig", "低", "Faible", "Niski", "낮음", "منخفض"),

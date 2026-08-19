@@ -24,6 +24,13 @@ namespace XBatteryStatus
         private static readonly Guid BatteryServiceGuid = new Guid("0000180f-0000-1000-8000-00805f9b34fb");
         private static readonly Guid BatteryLevelGuid = new Guid("00002a19-0000-1000-8000-00805f9b34fb");
 
+        [DllImport("user32.dll")]
+        private static extern int GetDpiForSystem();
+
+        /// <summary>系统缩放比（150% → 1.5）。WinForms 对纯代码窗体不会自动缩放，
+        /// 需要手动按此比例放大容器/控件，使其与系统放大后的字体匹配。</summary>
+        internal static readonly float DpiScale = GetDpiForSystem() / 96f;
+
         NotifyIcon notifyIcon = new NotifyIcon();
         private ContextMenuStrip contextMenu;
         private ToolStripMenuItem themeButton;
@@ -68,6 +75,7 @@ namespace XBatteryStatus
             notifyIcon.Visible = true;
 
             BuildContextMenu();
+            if (DpiScale > 1.01f) contextMenu.Scale(new SizeF(DpiScale, DpiScale));
 
             InitializeBluetoothRadioAsync();
             FindBleDevices();
@@ -351,7 +359,7 @@ namespace XBatteryStatus
             }
         }
 
-        private static void LogStatic(string s)
+        internal static void LogStatic(string s)
         {
             if (!AppConfig.Logging) return;
             try

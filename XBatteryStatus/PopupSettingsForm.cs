@@ -127,10 +127,10 @@ namespace XBatteryStatus
 
             // position
             Controls.Add(MakeLabel(Localization.Tr("Position"), 12, y + 4));
-            setPositionButton = new Button { Text = Localization.Tr("SetPosition"), Location = new Point(70, y), Size = new Size(110, 28) };
+            setPositionButton = new Button { Text = Localization.Tr("SetPosition"), Location = new Point(70, y), AutoSize = true, Height = 28 };
             setPositionButton.Click += (s, e) => StartPositioning();
             Controls.Add(setPositionButton);
-            resetPositionButton = new Button { Text = Localization.Tr("ResetPosition"), Location = new Point(188, y), Size = new Size(120, 28) };
+            resetPositionButton = new Button { Text = Localization.Tr("ResetPosition"), Location = new Point(70 + setPositionButton.Width + 8, y), AutoSize = true, Height = 28 };
             resetPositionButton.Click += (s, e) => ResetPosition();
             Controls.Add(resetPositionButton);
             y += 34;
@@ -160,6 +160,7 @@ namespace XBatteryStatus
             LoadCurrentFonts();
             scaleBar.Value = (int)Math.Round(AppConfig.PopupScale * 100);
             UpdateScaleLabel();
+            if (MyApplicationContext.DpiScale > 1.01f) Scale(new SizeF(MyApplicationContext.DpiScale, MyApplicationContext.DpiScale));
         }
 
         private string EffectiveTitle()

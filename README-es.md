@@ -121,7 +121,6 @@ La salida se escribe en `XBatteryStatus/bin/Release/net8.0-windows10.0.19041.0/`
 
 - R: XInput solo ofrece 4 niveles (Empty vacía / Low baja / Medium media / Full llena); no hay porcentaje exacto como en el GATT de Bluetooth. Es una limitación del propio protocolo XInput; no hay nada que pueda hacer.
 
-Admite varios dispositivos
 
 ## 🙏 Referencias y créditos
 

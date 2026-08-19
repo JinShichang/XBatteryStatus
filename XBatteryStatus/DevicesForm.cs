@@ -147,6 +147,7 @@ namespace XBatteryStatus
             Controls.Add(cancelButton);
             CancelButton = cancelButton;
 
+            if (MyApplicationContext.DpiScale > 1.01f) Scale(new SizeF(MyApplicationContext.DpiScale, MyApplicationContext.DpiScale));
             Shown += DevicesForm_Shown;
         }
 
@@ -220,7 +221,7 @@ namespace XBatteryStatus
             string[] headers =
             {
                 Localization.Tr("Device"),
-                "Battery",
+                Localization.Tr("Battery"),
                 Localization.Tr("EnableAlert"),
                 Localization.Tr("CustomName"),
                 Localization.Tr("AlertAt") + " 1",
